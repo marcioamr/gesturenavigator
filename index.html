@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Controle de Gestos com GestureRecognizer</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: url('assets/bg.jpg') no-repeat center center fixed;
+            background-size: cover;
+        }
+        #webcam {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            width: 200px;
+            border: 2px solid #444;
+            z-index: 2;
+        }
+        #cursor {
+            position: absolute;
+            width: 96px;
+            height: 96px;
+            background: url('assets/cursor.png') no-repeat center center;
+            background-size: contain;
+            pointer-events: none;
+            transform: translate(-50%, -50%);
+            display: none;
+            z-index: 2;
+        }
+        #gesture_output {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 8px;
+            z-index: 3;
+        }
+        #mapContainer {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 60%;
+            height: auto;
+        }
+        #mapContainer img {
+            width: 100%;
+        }
+        .state {
+            position: absolute;
+            cursor: pointer;
+            background: rgba(169, 169, 169, 0.5);
+            transition: background 0.3s ease;
+        }
+        .state:hover {
+            background: rgba(169, 169, 169, 0.7);
+        }
+        #sp { top: 560px; left: 480px; width: 120px; height: 80px; }
+        #rj { top: 570px; left: 620px; width: 110px; height: 50px; }
+        #ba { top: 330px; left: 620px; width: 140px; height: 110px; }
+        #mt { top: 320px; left: 300px; width: 190px; height: 150px; }
+
+        #output_canvas {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            width: 200px;
+            height: auto;
+            z-index: 3;
+            pointer-events: none;
+            font-family: Arial, sans-serif;
+        }
+
+        #stateOutput {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 8px;
+            z-index: 3;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <video id="webcam" autoplay muted playsinline></video>
+    <canvas class="output_canvas" id="output_canvas"></canvas>
+    <div id="cursor"></div>
+    <div id="gesture_output" class="output"></div>
+    <div id="mapContainer">
+        <img src="assets/mapa.png" alt="Mapa do Brasil">
+        <div class="state" id="sp" data-state="São Paulo"></div>
+        <div class="state" id="rj" data-state="Rio de Janeiro"></div>
+        <div class="state" id="ba" data-state="Bahia"></div>
+        <div class="state" id="mt" data-state="Mato Grosso"></div>
+    </div>
+    <div id="stateOutput" class="output"></div>
+    <script type="module">
+        import { GestureRecognizer, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+        
+        let gestureRecognizer;
+        let runningMode = "IMAGE";
+        let webcamRunning = false;
+        let lastGesture = null;
+        let lastUpdateTime = Date.now();
+
+        const video = document.getElementById("webcam");
+        const canvasElement = document.getElementById("output_canvas");
+        const canvasCtx = canvasElement.getContext("2d");
+        const gestureOutput = document.getElementById("gesture_output");
+        const cursor = document.getElementById("cursor");
+        const stateOutput = document.getElementById("stateOutput");
+        
+        let cursorX = window.innerWidth / 2;
+        let cursorY = window.innerHeight / 2;
+
+        const createGestureRecognizer = async () => {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+            gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+                    delegate: "GPU"
+                },
+                runningMode: runningMode
+            });
+            enableCam();
+        };
+        createGestureRecognizer();
+
+        function enableCam() {
+            if (!gestureRecognizer) {
+                alert("Please wait for gestureRecognizer to load");
+                return;
+            }
+
+            if (webcamRunning) return;
+            webcamRunning = true;
+
+            navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    canvasElement.width = video.videoWidth;
+                    canvasElement.height = video.videoHeight;
+                    predictWebcam();
+                });
+            });
+        }
+
+        let lastVideoTime = -1;
+        async function predictWebcam() {
+            let nowInMs = Date.now();
+
+            // Update gesture every 300ms
+            if (nowInMs - lastUpdateTime >= 300) {
+                lastUpdateTime = nowInMs;
+
+                if (runningMode === "IMAGE") {
+                    runningMode = "VIDEO";
+                    await gestureRecognizer.setOptions({ runningMode: "VIDEO" });
+                }
+
+                if (video.currentTime !== lastVideoTime) {
+                    lastVideoTime = video.currentTime;
+                    const results = gestureRecognizer.recognizeForVideo(video, nowInMs);
+
+                    canvasCtx.save();
+                    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                    const drawingUtils = new DrawingUtils(canvasCtx);
+
+                    if (results.landmarks) {
+                        for (const landmarks of results.landmarks) {
+                            drawingUtils.drawConnectors(landmarks, GestureRecognizer.HAND_CONNECTIONS, {
+                                color: "#00FF00",
+                                lineWidth: 5
+                            });
+                            drawingUtils.drawLandmarks(landmarks, {
+                                color: "#FF0000",
+                                lineWidth: 2
+                            });
+                        }
+                    }
+
+                    canvasCtx.restore();
+
+                    if (results.gestures.length > 0) {
+                        const categoryName = results.gestures[0][0].categoryName;
+                        const categoryScore = parseFloat(results.gestures[0][0].score * 100).toFixed(2);
+                        const handedness = results.handednesses[0][0].displayName;
+                        gestureOutput.innerText = `Gesto: ${categoryName}\nConfidence: ${categoryScore}%\nHandedness: ${handedness}`;
+
+                        // Detecta o gesto pointing_up
+                        if ((categoryName === "Pointing_Up" || categoryName === "None") && results.landmarks.length > 0) {
+                            lastGesture = categoryName;
+                            const indexFingerTip = results.landmarks[0][8]; // Ponta do dedo indicador
+                            const targetX = (1 - indexFingerTip.x) * window.innerWidth;  // Inverte o eixo X e usa o tamanho da tela
+                            const targetY = indexFingerTip.y * window.innerHeight; // Usa a altura da tela
+
+                            // Suaviza o movimento do cursor
+                            cursorX = lerp(cursorX, targetX, 0.1);
+                            cursorY = lerp(cursorY, targetY, 0.1);
+
+                            // Atualiza a posição do cursor
+                            cursor.style.transform = `translate(${cursorX}px, ${cursorY}px)`;
+                            cursor.style.display = "block";
+                        } else {
+                            cursor.style.display = "none"; // Esconde o cursor se não estiver apontando
+                        }
+
+                        // Detecta o gesto de mão fechada
+                        if (categoryName === "Closed_Fist" && results.landmarks.length > 0) {
+                            if (lastGesture !== "Closed_Fist") {
+                                lastGesture = categoryName;
+                                stateOutput.innerText = "Mão fechada detectada!";
+                                stateOutput.style.display = "block";
+                                setTimeout(() => {
+                                    stateOutput.style.display = "none";
+                                }, 3000);
+
+                                // Simula o clique na div do estado
+                                states.forEach(state => {
+                                    const stateRect = state.getBoundingClientRect();
+                                    // Verifica se a posição do cursor está dentro da div do estado
+                                    if (
+                                        cursorX >= stateRect.left &&
+                                        cursorX <= stateRect.right &&
+                                        cursorY >= stateRect.top &&
+                                        cursorY <= stateRect.bottom
+                                    ) {
+                                        // Simula o clique
+                                        state.click();
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            requestAnimationFrame(predictWebcam);
+        }
+
+        const states = document.querySelectorAll(".state");
+
+        states.forEach(state => {
+            state.addEventListener("click", () => {
+                stateOutput.innerText = `Estado selecionado: ${state.dataset.state}`;
+                stateOutput.style.display = "block";
+            });
+        });
+
+        // Função de interpolação para suavizar o movimento do cursor
+        function lerp(a, b, t) {
+            return a + (b - a) * t;
+        }
+    </script>
+</body>
+</html>
